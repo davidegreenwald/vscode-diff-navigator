@@ -1,0 +1,112 @@
+{
+  "name": "diff-navigator",
+  "displayName": "Diff Navigator",
+  "icon": "images/icon.png",
+  "description": "A lightweight sidebar showing changed files across all workspace repos",
+  "version": "1.0.0",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "diff-navigator",
+          "title": "Diff Navigator",
+          "icon": "$(git-compare)"
+        }
+      ]
+    },
+    "views": {
+      "diff-navigator": [
+        {
+          "id": "diffNavigator.changes",
+          "name": "Changes"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "diffNavigator.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "diffNavigator.openDiff",
+        "title": "Open Diff"
+      },
+      {
+        "command": "diffNavigator.openTerminal",
+        "title": "Open Terminal Here",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "diffNavigator.revealInExplorer",
+        "title": "Reveal in Explorer",
+        "icon": "$(file-symlink-directory)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "diffNavigator.refresh",
+          "when": "view == diffNavigator.changes",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "diffNavigator.openTerminal",
+          "when": "view == diffNavigator.changes && viewItem == repo && config.diffNavigator.showTerminalButton",
+          "group": "inline"
+        },
+        {
+          "command": "diffNavigator.revealInExplorer",
+          "when": "view == diffNavigator.changes && viewItem == file && config.diffNavigator.showRevealButton",
+          "group": "inline"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Diff Navigator",
+      "properties": {
+        "diffNavigator.showTerminalButton": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show terminal button on repository folders"
+        },
+        "diffNavigator.showRevealButton": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show reveal in explorer button on files"
+        }
+      }
+    }
+  },
+  "extensionDependencies": [
+    "vscode.git"
+  ],
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.2",
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.74.0",
+    "@typescript-eslint/eslint-plugin": "^8.54.0",
+    "@typescript-eslint/parser": "^8.54.0",
+    "eslint": "^9.39.2",
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.54.0"
+  }
+}

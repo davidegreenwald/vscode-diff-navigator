@@ -1,0 +1,12 @@
+.vscode/**
+.vscode-test/**
+src/**
+**/*.ts
+**/*.map
+.gitignore
+tsconfig.json
+vsc-extension-quickstart.md
+vscode-marketplace.md
+CLAUDE-PLANS/**
+*.vsix
+node_modules/**
