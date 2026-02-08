@@ -17,6 +17,11 @@ import { Status } from './git';     // Value import - we need the actual enum va
 import type { Repository } from './git';  // Type-only import - erased at runtime, just for TypeScript
 
 /**
+ * Track open terminals per repo so we can reuse them instead of spawning duplicates.
+ */
+const repoTerminals = new Map<string, vscode.Terminal>();
+
+/**
  * activate() is called by VS Code when your extension is first needed.
  *
  * WHY export? VS Code looks for this specific exported function name.
@@ -63,53 +68,60 @@ export function activate(context: vscode.ExtensionContext) {
    */
   const openDiffCommand = vscode.commands.registerCommand(
     'diffNavigator.openDiff',
-    async (change: FileChange, repo: Repository) => {
-      // path.basename() extracts just the filename from a full path
-      // e.g., "/users/bob/project/src/index.ts" → "index.ts"
-      const filename = path.basename(change.uri.fsPath);
+    async (change: FileChange, _repo: Repository) => {
+      if (!change?.uri) return;
 
-      /**
-       * Determine what kind of change this is using the Status enum.
-       *
-       * WHY named constants instead of numbers? Compare:
-       *   change.status === 1  // What does 1 mean? Who knows!
-       *   change.status === Status.INDEX_ADDED  // Self-documenting!
-       *
-       * This makes the code readable without comments.
-       */
-      const isNewFile =
-        change.status === Status.INDEX_ADDED ||
-        change.status === Status.INDEX_COPIED ||
-        change.status === Status.UNTRACKED ||
-        change.status === Status.INTENT_TO_ADD;
+      try {
+        // path.basename() extracts just the filename from a full path
+        // e.g., "/users/bob/project/src/index.ts" -> "index.ts"
+        const filename = path.basename(change.uri.fsPath);
 
-      const isDeleted =
-        change.status === Status.INDEX_DELETED ||
-        change.status === Status.DELETED;
+        /**
+         * Determine what kind of change this is using the Status enum.
+         *
+         * WHY named constants instead of numbers? Compare:
+         *   change.status === 1  // What does 1 mean? Who knows!
+         *   change.status === Status.INDEX_ADDED  // Self-documenting!
+         *
+         * This makes the code readable without comments.
+         */
+        const isNewFile =
+          change.status === Status.INDEX_ADDED ||
+          change.status === Status.INDEX_COPIED ||
+          change.status === Status.UNTRACKED ||
+          change.status === Status.INTENT_TO_ADD;
 
-      /**
-       * Handle different file states appropriately:
-       * - New files: No previous version exists, so just open the file
-       * - Deleted files: Current version doesn't exist, so show the old version
-       * - Modified files: Show side-by-side diff (old vs new)
-       */
-      if (isNewFile) {
-        // vscode.open is a built-in command that opens any file
-        await vscode.commands.executeCommand('vscode.open', change.uri);
-      } else if (isDeleted) {
-        // Get the HEAD (last committed) version of the file
-        const gitUri = toGitUri(change.uri, 'HEAD');
-        await vscode.commands.executeCommand('vscode.open', gitUri);
-      } else {
-        // vscode.diff opens VS Code's built-in diff editor
-        // Arguments: left file (old), right file (new), title
-        const gitUri = toGitUri(change.uri, 'HEAD');
-        await vscode.commands.executeCommand(
-          'vscode.diff',
-          gitUri,
-          change.uri,
-          `${filename} (Working Tree)`  // Template literal for string interpolation
-        );
+        const isDeleted =
+          change.status === Status.INDEX_DELETED ||
+          change.status === Status.DELETED;
+
+        /**
+         * Handle different file states appropriately:
+         * - New files: No previous version exists, so just open the file
+         * - Deleted files: Current version doesn't exist, so show the old version
+         * - Modified files: Show side-by-side diff (old vs new)
+         */
+        if (isNewFile) {
+          // vscode.open is a built-in command that opens any file
+          await vscode.commands.executeCommand('vscode.open', change.uri);
+        } else if (isDeleted) {
+          // Get the HEAD (last committed) version of the file
+          const gitUri = toGitUri(change.uri, 'HEAD');
+          await vscode.commands.executeCommand('vscode.open', gitUri);
+        } else {
+          // vscode.diff opens VS Code's built-in diff editor
+          // Arguments: left file (old), right file (new), title
+          const gitUri = toGitUri(change.uri, 'HEAD');
+          await vscode.commands.executeCommand(
+            'vscode.diff',
+            gitUri,
+            change.uri,
+            `${filename} (Working Tree)`  // Template literal for string interpolation
+          );
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        vscode.window.showErrorMessage(`Diff Navigator: Failed to open diff - ${message}`);
       }
     }
   );
@@ -120,6 +132,8 @@ export function activate(context: vscode.ExtensionContext) {
    * WHY the weird type { repo?: Repository }?
    * This matches the shape of RepoItem. The ? means repo is optional,
    * so we must check it exists before using it (defensive coding).
+   *
+   * Reuses an existing terminal for the same repo if one is still open.
    */
   const openTerminalCommand = vscode.commands.registerCommand(
     'diffNavigator.openTerminal',
@@ -133,14 +147,36 @@ export function activate(context: vscode.ExtensionContext) {
        *   item && item.repo && item.repo.rootUri
        */
       if (item?.repo?.rootUri) {
+        const key = item.repo.rootUri.toString();
+        const existing = repoTerminals.get(key);
+
+        // Reuse existing terminal if it hasn't been closed
+        if (existing) {
+          existing.show();
+          return;
+        }
+
         const terminal = vscode.window.createTerminal({
           name: path.basename(item.repo.rootUri.fsPath) || 'Terminal',
           cwd: item.repo.rootUri  // Set working directory to repo root
         });
+        repoTerminals.set(key, terminal);
         terminal.show();  // Make the terminal panel visible
       }
     }
   );
+
+  /**
+   * Clean up terminal references when terminals are closed by the user.
+   */
+  const terminalCloseListener = vscode.window.onDidCloseTerminal(closedTerminal => {
+    for (const [key, terminal] of repoTerminals) {
+      if (terminal === closedTerminal) {
+        repoTerminals.delete(key);
+        break;
+      }
+    }
+  });
 
   /**
    * revealInExplorer command - Shows the file in VS Code's file explorer
@@ -170,6 +206,7 @@ export function activate(context: vscode.ExtensionContext) {
     openDiffCommand,
     openTerminalCommand,
     revealInExplorerCommand,
+    terminalCloseListener,
     changesProvider  // ChangesProvider has a dispose() method too
   );
 }

@@ -10,3 +10,13 @@ vscode-marketplace.md
 CLAUDE-PLANS/**
 *.vsix
 node_modules/**
+eslint.config.mjs
+CLAUDE.md
+package-lock.json
+.DS_Store
+**/*.test.ts
+vitest.config.ts
+vitest.config.js
+.vscode-test.mjs
+.prettierrc.json
+.prettierignore
