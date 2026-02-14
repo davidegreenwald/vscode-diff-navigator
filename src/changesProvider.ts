@@ -14,27 +14,10 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 
-/**
- * Two import styles for the same module:
- * - { Status } imports the enum VALUE (needed for comparisons at runtime)
- * - type { ... } imports only TYPE information (erased after compilation)
- *
- * Using 'type' imports helps bundlers remove unused code and makes
- * the intent clear: "I only need this for type-checking, not runtime."
- */
-import { Status } from './git';
+import type { Status } from './git';
 import type { API as GitAPI, Repository } from './git';
-
-/**
- * TYPE ALIAS: Creates a shorthand for a union of string literals.
- *
- * ChangeType can ONLY be one of these 5 values - TypeScript enforces this.
- * This is more precise than just using 'string', which would allow any text.
- *
- * WHY single letters? They're displayed in the UI next to each file,
- * following git's convention (M=Modified, A=Added, D=Deleted, etc.)
- */
-type ChangeType = 'M' | 'A' | 'D' | 'R' | 'U';
+import { getChangeType, collectChanges } from './gitUtils';
+import type { ChangeType } from './gitUtils';
 
 /**
  * INTERFACE: Defines the shape of an object (what properties it must have).
@@ -96,11 +79,23 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
   private disposables: vscode.Disposable[] = [];
 
   /**
+   * Track per-repository watchers so they can be disposed when a repo is closed.
+   * Without this, watchers for closed repos would leak until extension deactivation.
+   */
+  private repoWatchers = new Map<string, vscode.Disposable>();
+
+  /**
+   * Promise that resolves when git initialization completes.
+   * getChildren() awaits this so the tree waits for git instead of returning empty.
+   */
+  private gitInitPromise: Promise<void>;
+
+  /**
    * CONSTRUCTOR: Called when 'new ChangesProvider()' is executed.
    * Sets up the initial state and starts async initialization.
    */
   constructor() {
-    this.initGit();  // Note: this is async but we don't await it (fire-and-forget)
+    this.gitInitPromise = this.initGit();
   }
 
   /**
@@ -124,6 +119,7 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
       if (!gitExtension) {
         // Fail gracefully - maybe git isn't installed or enabled
         console.log('Diff Navigator: Git extension not found');
+        vscode.window.showErrorMessage('Diff Navigator: Git extension not found. Please ensure Git is installed.');
         return;  // Early return pattern - exit immediately if precondition fails
       }
 
@@ -146,12 +142,23 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
        * onDidCloseRepository: Listen for repos being closed
        */
       this.git.repositories.forEach(repo => this.watchRepo(repo));
-      this.git.onDidOpenRepository(repo => this.watchRepo(repo));
-      this.git.onDidCloseRepository(() => this.refresh());
+
+      const openDisposable = this.git.onDidOpenRepository(repo => this.watchRepo(repo));
+      const closeDisposable = this.git.onDidCloseRepository(repo => {
+        const key = repo.rootUri.toString();
+        const watcher = this.repoWatchers.get(key);
+        if (watcher) {
+          watcher.dispose();
+          this.repoWatchers.delete(key);
+        }
+        this.refresh();
+      });
+      this.disposables.push(openDisposable, closeDisposable);
 
     } catch (error) {
-      // Log errors but don't crash - extension can still partially work
+      // Log errors and notify the user
       console.error('Diff Navigator: Failed to initialize git', error);
+      vscode.window.showErrorMessage('Diff Navigator: Failed to initialize git. Check the console for details.');
     }
   }
 
@@ -162,11 +169,19 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
    * This preserves 'this' context. Using function() would lose it.
    */
   private watchRepo(repo: Repository): void {
+    const key = repo.rootUri.toString();
+
+    // Dispose existing watcher if re-watching the same repo
+    const existing = this.repoWatchers.get(key);
+    if (existing) {
+      existing.dispose();
+    }
+
     // Subscribe to the repo's change event, call refresh() when it fires
     const disposable = repo.state.onDidChange(() => this.refresh());
 
-    // Track this subscription so we can clean it up later
-    this.disposables.push(disposable);
+    // Track this subscription keyed by repo URI for targeted cleanup
+    this.repoWatchers.set(key, disposable);
   }
 
   /**
@@ -204,6 +219,9 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
    * The ? in 'element?' means the parameter is optional (can be undefined).
    */
   async getChildren(element?: RepoItem | FileItem): Promise<(RepoItem | FileItem)[]> {
+    // Wait for git initialization to complete before returning data
+    await this.gitInitPromise;
+
     // Guard clause: If git isn't initialized, return empty array
     if (!this.git) {
       return [];
@@ -253,57 +271,22 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
    * WHY deduplicate? A file can appear in both workingTreeChanges AND
    * indexChanges if it has both staged and unstaged modifications.
    * We only want to show it once.
+   *
+   * Ignored files (Status.IGNORED) are filtered out since they shouldn't
+   * appear in a "changes" view.
    */
   private getChangesForRepo(repo: Repository): FileChange[] {
-    const changes: FileChange[] = [];
+    const raw = collectChanges(
+      repo.state.workingTreeChanges,
+      repo.state.indexChanges
+    );
 
-    /**
-     * Set<string>: A collection that only stores unique values.
-     * We use it to track which file paths we've already added.
-     *
-     * WHY Set over Array? Set.has() is O(1), Array.includes() is O(n).
-     * For large repos, this matters.
-     */
-    const seenPaths = new Set<string>();
-
-    /**
-     * for...of loop: Modern way to iterate over arrays.
-     * Cleaner than traditional for(i=0; i<arr.length; i++)
-     *
-     * Working tree = unstaged changes (modified but not 'git add'ed)
-     */
-    for (const change of repo.state.workingTreeChanges) {
-      const path = change.uri.fsPath;
-      if (!seenPaths.has(path)) {
-        seenPaths.add(path);
-        /**
-         * Object literal with shorthand property syntax:
-         * { repo } is the same as { repo: repo }
-         */
-        changes.push({
-          uri: change.uri,
-          originalUri: change.originalUri,
-          status: change.status,
-          repo  // Shorthand for repo: repo
-        });
-      }
-    }
-
-    // Index = staged changes (after 'git add')
-    for (const change of repo.state.indexChanges) {
-      const path = change.uri.fsPath;
-      if (!seenPaths.has(path)) {
-        seenPaths.add(path);
-        changes.push({
-          uri: change.uri,
-          originalUri: change.originalUri,
-          status: change.status,
-          repo
-        });
-      }
-    }
-
-    return changes;
+    return raw.map(change => ({
+      uri: change.uri as vscode.Uri,
+      originalUri: change.originalUri as vscode.Uri,
+      status: change.status,
+      repo
+    }));
   }
 
   /**
@@ -339,6 +322,8 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
   dispose(): void {
     this._onDidChangeTreeData.dispose();
     this.disposables.forEach(d => d.dispose());
+    this.repoWatchers.forEach(d => d.dispose());
+    this.repoWatchers.clear();
   }
 }
 
@@ -410,7 +395,7 @@ class FileItem extends vscode.TreeItem {
     // Files are leaf nodes (can't be expanded), so use None
     super(relativePath, vscode.TreeItemCollapsibleState.None);
 
-    const changeType = this.getChangeType(change.status);
+    const changeType = getChangeType(change.status);
     this.iconPath = this.getIcon(changeType);
     this.contextValue = 'file';  // Enables context menu items with "viewItem == file"
 
@@ -432,44 +417,6 @@ class FileItem extends vscode.TreeItem {
      * errors, etc.), those decorations will apply to this item too.
      */
     this.resourceUri = change.uri;
-  }
-
-  /**
-   * Convert git's numeric status codes to human-readable letters.
-   *
-   * SWITCH statement: Efficient way to handle many discrete cases.
-   * Each case can "fall through" to the next if there's no return/break.
-   *
-   * WHY group some cases? Multiple statuses map to the same display letter.
-   * INDEX_ADDED and UNTRACKED both show as "A" (Added).
-   */
-  private getChangeType(status: Status): ChangeType {
-    switch (status) {
-      case Status.INDEX_MODIFIED: return 'M';  // Staged modification
-      case Status.INDEX_ADDED: return 'A';     // Staged new file
-      case Status.INDEX_DELETED: return 'D';   // Staged deletion
-      case Status.INDEX_RENAMED: return 'R';   // Staged rename
-      case Status.INDEX_COPIED: return 'A';    // Staged copy (treat as add)
-      case Status.MODIFIED: return 'M';        // Unstaged modification
-      case Status.DELETED: return 'D';         // Unstaged deletion
-      case Status.UNTRACKED: return 'A';       // New file not yet tracked
-      case Status.IGNORED: return 'D';         // In .gitignore (rare to see)
-      case Status.INTENT_TO_ADD: return 'A';   // git add -N (intent to add)
-
-      /**
-       * Fall-through cases: Multiple cases with no return share
-       * the same result. These are all merge conflict states.
-       */
-      case Status.ADDED_BY_US:
-      case Status.ADDED_BY_THEM:
-      case Status.DELETED_BY_US:
-      case Status.DELETED_BY_THEM:
-      case Status.BOTH_ADDED:
-      case Status.BOTH_DELETED:
-      case Status.BOTH_MODIFIED: return 'U';   // Unmerged (conflict)
-
-      default: return 'M';  // Fallback for unknown status codes
-    }
   }
 
   /**

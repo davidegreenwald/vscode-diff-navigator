@@ -34,14 +34,22 @@ code --install-extension diff-navigator-1.0.0.vsix
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `minimalDiffViewer.showTerminalButton` | `true` | Show terminal button on repository folders |
-| `minimalDiffViewer.showRevealButton` | `true` | Show reveal in explorer button on files |
+| `diffNavigator.showTerminalButton` | `true` | Show terminal button on repository folders |
+| `diffNavigator.showRevealButton` | `true` | Show reveal in explorer button on files |
 
 ## Development
 
 ```bash
 npm run watch    # Compile on save
 # Press F5 in VSCode to launch Extension Development Host
+```
+
+### Testing
+
+```bash
+npm test         # Run unit tests (vitest)
+npm run lint     # Run ESLint
+npm run format:check  # Check formatting
 ```
 
 ## Architecture

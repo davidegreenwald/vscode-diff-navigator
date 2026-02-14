@@ -1,14 +1,28 @@
 {
   "name": "diff-navigator",
   "displayName": "Diff Navigator",
+  "publisher": "davidegreenwald",
   "icon": "images/icon.png",
   "description": "A lightweight sidebar showing changed files across all workspace repos",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/davidegreenwald/vscode-diff-navigator"
+  },
   "version": "1.0.0",
   "engines": {
     "vscode": "^1.74.0"
   },
   "categories": [
+    "SCM Providers",
     "Other"
+  ],
+  "keywords": [
+    "git",
+    "diff",
+    "sidebar",
+    "changes",
+    "multi-root"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -97,7 +111,12 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts"
+    "lint": "eslint src --ext ts",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\"",
+    "test": "vitest run",
+    "test:integration": "vscode-test",
+    "package": "vsce package"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.2",
@@ -105,8 +124,14 @@
     "@types/vscode": "^1.74.0",
     "@typescript-eslint/eslint-plugin": "^8.54.0",
     "@typescript-eslint/parser": "^8.54.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.1",
+    "@vscode/vsce": "^3.2.2",
     "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.5",
+    "prettier": "^3.5.3",
     "typescript": "^5.0.0",
-    "typescript-eslint": "^8.54.0"
+    "typescript-eslint": "^8.54.0",
+    "vitest": "^3.1.4"
   }
 }
