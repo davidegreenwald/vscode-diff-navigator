@@ -7,7 +7,7 @@ A lightweight VSCode sidebar extension that shows changed files across all works
 ## Features
 
 - Shows all changed files grouped by repository
-- Change type indicators: **M** (Modified), **A** (Added), **D** (Deleted)
+- Change type indicators: **M** (Modified), **A** (Added), **D** (Deleted), **R** (Renamed), **U** (Unmerged conflict)
 - Click any file to open its diff view
 - Terminal button on repos to open a terminal in that folder
 - Reveal button on files to show them in VSCode's file explorer
@@ -22,12 +22,11 @@ npm install
 # Compile
 npm run compile
 
-# Package
-npm install -g @vscode/vsce
-vsce package --allow-missing-repository
+# Package (vsce ships as a devDependency)
+npm run package
 
 # Install
-code --install-extension diff-navigator-1.0.0.vsix
+code --install-extension diff-navigator-1.0.1.vsix
 ```
 
 ## Settings
@@ -48,6 +47,7 @@ npm run watch    # Compile on save
 
 ```bash
 npm test         # Run unit tests (vitest)
+npm run test:integration  # Run smoke tests inside a real VS Code instance
 npm run lint     # Run ESLint
 npm run format:check  # Check formatting
 ```
@@ -63,10 +63,14 @@ diff-navigator/
 ├── src/                   # Source code (TypeScript)
 │   ├── extension.ts       # Entry point - runs when extension activates
 │   ├── changesProvider.ts # Tree view logic - what to show in sidebar
-│   └── git.d.ts           # Type definitions for VSCode's git API
+│   ├── gitUtils.ts        # Pure git status logic (unit tested)
+│   ├── gitUtils.test.ts   # Vitest unit tests
+│   ├── git.d.ts           # Type definitions for VSCode's git API
+│   └── test/              # Integration smoke tests (run inside VS Code)
 ├── out/                   # Compiled JavaScript (generated)
 │   ├── extension.js
-│   └── changesProvider.js
+│   ├── changesProvider.js
+│   └── gitUtils.js
 └── *.vsix                 # Packaged extension (generated)
 ```
 
@@ -136,6 +140,6 @@ You can rename it to `.zip` and extract it to see inside.
 
 **Commands**: Named actions that can be triggered by buttons, menus, or keyboard shortcuts. Defined in `package.json`, implemented in TypeScript.
 
-**Activation**: Extensions don't run until needed. `onStartupFinished` in `activationEvents` means "load after VSCode starts."
+**Activation**: Extensions don't run until needed. Contributing a view auto-generates its activation event (VS Code 1.74+), so Diff Navigator loads the first time its sidebar view is opened instead of on every startup.
 
 **Git Extension API**: VSCode has a built-in git extension. Other extensions can access it to get repository info, changed files, etc.

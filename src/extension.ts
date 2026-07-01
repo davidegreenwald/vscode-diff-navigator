@@ -10,16 +10,11 @@
  */
 
 // IMPORTS: We use two styles here to demonstrate the difference
-import * as vscode from 'vscode';  // Import everything as a namespace object
-import * as path from 'path';       // Node.js built-in for cross-platform path handling
-import { ChangesProvider, FileChange } from './changesProvider';  // Named imports (specific items)
-import { Status } from './git';     // Value import - we need the actual enum values
-import type { Repository } from './git';  // Type-only import - erased at runtime, just for TypeScript
-
-/**
- * Track open terminals per repo so we can reuse them instead of spawning duplicates.
- */
-const repoTerminals = new Map<string, vscode.Terminal>();
+import * as vscode from 'vscode'; // Import everything as a namespace object
+import * as path from 'path'; // Node.js built-in for cross-platform path handling
+import { ChangesProvider, FileChange } from './changesProvider'; // Named imports (specific items)
+import type { Repository } from './git'; // Type-only import - erased at runtime, just for TypeScript
+import { computeDiffAction } from './gitUtils'; // Pure status-routing logic (unit tested)
 
 /**
  * activate() is called by VS Code when your extension is first needed.
@@ -41,7 +36,7 @@ export function activate(context: vscode.ExtensionContext) {
    */
   const treeView = vscode.window.createTreeView('diffNavigator.changes', {
     treeDataProvider: changesProvider,
-    showCollapseAll: true  // Adds a "collapse all" button to the view header
+    showCollapseAll: true, // Adds a "collapse all" button to the view header
   });
 
   /**
@@ -63,60 +58,51 @@ export function activate(context: vscode.ExtensionContext) {
    * WHY async? We use 'await' inside, which requires the function to be async.
    * TypeScript will enforce that we handle the Promise properly.
    *
-   * The parameters (change, repo) come from the tree item's command.arguments
-   * array (set in FileItem constructor in changesProvider.ts).
+   * The change parameter comes from the tree item's command.arguments array
+   * (set in FileItem constructor in changesProvider.ts). The status-to-action
+   * routing lives in gitUtils.computeDiffAction so it can be unit tested;
+   * this handler only maps the action onto vscode commands.
    */
   const openDiffCommand = vscode.commands.registerCommand(
     'diffNavigator.openDiff',
-    async (change: FileChange, _repo: Repository) => {
+    async (change: FileChange) => {
       if (!change?.uri) return;
 
       try {
         // path.basename() extracts just the filename from a full path
         // e.g., "/users/bob/project/src/index.ts" -> "index.ts"
         const filename = path.basename(change.uri.fsPath);
+        const action = computeDiffAction(change.status);
 
-        /**
-         * Determine what kind of change this is using the Status enum.
-         *
-         * WHY named constants instead of numbers? Compare:
-         *   change.status === 1  // What does 1 mean? Who knows!
-         *   change.status === Status.INDEX_ADDED  // Self-documenting!
-         *
-         * This makes the code readable without comments.
-         */
-        const isNewFile =
-          change.status === Status.INDEX_ADDED ||
-          change.status === Status.INDEX_COPIED ||
-          change.status === Status.UNTRACKED ||
-          change.status === Status.INTENT_TO_ADD;
-
-        const isDeleted =
-          change.status === Status.INDEX_DELETED ||
-          change.status === Status.DELETED;
-
-        /**
-         * Handle different file states appropriately:
-         * - New files: No previous version exists, so just open the file
-         * - Deleted files: Current version doesn't exist, so show the old version
-         * - Modified files: Show side-by-side diff (old vs new)
-         */
-        if (isNewFile) {
-          // vscode.open is a built-in command that opens any file
+        if (action === 'openCurrent') {
+          // New files and conflicts: open the working file directly. New files
+          // have no committed counterpart; for conflicts the working file
+          // holds the markers the user needs to act on.
           await vscode.commands.executeCommand('vscode.open', change.uri);
-        } else if (isDeleted) {
-          // Get the HEAD (last committed) version of the file
-          const gitUri = toGitUri(change.uri, 'HEAD');
-          await vscode.commands.executeCommand('vscode.open', gitUri);
+          return;
+        }
+
+        // Ask the git extension for the HEAD-side URI instead of hand-building
+        // a git-scheme URI: the query format is internal to the git extension
+        // and can change without notice.
+        const git = changesProvider.getAPI();
+        if (!git) return; // Tree items only render once the git API is live
+
+        // Use originalUri so renamed files resolve to the path that exists at
+        // HEAD (uri points at the new name, which HEAD does not have).
+        const headUri = git.toGitUri(change.originalUri ?? change.uri, 'HEAD');
+
+        if (action === 'openOriginalAtHead') {
+          // Deleted files: current version doesn't exist, show the old version
+          await vscode.commands.executeCommand('vscode.open', headUri);
         } else {
           // vscode.diff opens VS Code's built-in diff editor
           // Arguments: left file (old), right file (new), title
-          const gitUri = toGitUri(change.uri, 'HEAD');
           await vscode.commands.executeCommand(
             'vscode.diff',
-            gitUri,
+            headUri,
             change.uri,
-            `${filename} (Working Tree)`  // Template literal for string interpolation
+            `${filename} (Working Tree)` // Template literal for string interpolation
           );
         }
       } catch (error) {
@@ -134,7 +120,12 @@ export function activate(context: vscode.ExtensionContext) {
    * so we must check it exists before using it (defensive coding).
    *
    * Reuses an existing terminal for the same repo if one is still open.
+   * The terminal map is scoped to activate() rather than module level so a
+   * deactivate/reactivate cycle starts clean instead of holding disposed
+   * Terminal references in module state.
    */
+  const repoTerminals = new Map<string, vscode.Terminal>();
+
   const openTerminalCommand = vscode.commands.registerCommand(
     'diffNavigator.openTerminal',
     (item: { repo?: Repository }) => {
@@ -150,18 +141,20 @@ export function activate(context: vscode.ExtensionContext) {
         const key = item.repo.rootUri.toString();
         const existing = repoTerminals.get(key);
 
-        // Reuse existing terminal if it hasn't been closed
-        if (existing) {
+        // Reuse only live terminals: exitStatus stays undefined while a
+        // terminal runs. A stale entry can survive if the close listener was
+        // not active when the terminal died (e.g. shell process crash).
+        if (existing && existing.exitStatus === undefined) {
           existing.show();
           return;
         }
 
         const terminal = vscode.window.createTerminal({
           name: path.basename(item.repo.rootUri.fsPath) || 'Terminal',
-          cwd: item.repo.rootUri  // Set working directory to repo root
+          cwd: item.repo.rootUri, // Set working directory to repo root
         });
         repoTerminals.set(key, terminal);
-        terminal.show();  // Make the terminal panel visible
+        terminal.show(); // Make the terminal panel visible
       }
     }
   );
@@ -169,7 +162,7 @@ export function activate(context: vscode.ExtensionContext) {
   /**
    * Clean up terminal references when terminals are closed by the user.
    */
-  const terminalCloseListener = vscode.window.onDidCloseTerminal(closedTerminal => {
+  const terminalCloseListener = vscode.window.onDidCloseTerminal((closedTerminal) => {
     for (const [key, terminal] of repoTerminals) {
       if (terminal === closedTerminal) {
         repoTerminals.delete(key);
@@ -207,39 +200,8 @@ export function activate(context: vscode.ExtensionContext) {
     openTerminalCommand,
     revealInExplorerCommand,
     terminalCloseListener,
-    changesProvider  // ChangesProvider has a dispose() method too
+    changesProvider // ChangesProvider has a dispose() method too
   );
-}
-
-/**
- * Convert a regular file URI to a Git URI that references a specific version.
- *
- * WHY do we need this? VS Code's git extension uses a special URI scheme
- * to access historical versions of files. The 'git' scheme tells VS Code
- * to fetch the file content from git instead of the filesystem.
- *
- * Example:
- *   Input:  file:///users/bob/project/index.ts, "HEAD"
- *   Output: git:///users/bob/project/index.ts?{"path":"...","ref":"HEAD"}
- */
-function toGitUri(uri: vscode.Uri, ref: string): vscode.Uri {
-  // The git extension expects these params in the query string
-  const params = {
-    path: uri.fsPath,  // Filesystem path (OS-specific format)
-    ref: ref           // Git reference (HEAD, commit hash, branch name, etc.)
-  };
-
-  /**
-   * uri.with() creates a new URI with some properties changed.
-   * URIs are immutable, so we can't modify the original.
-   *
-   * JSON.stringify converts the params object to a string for the query.
-   */
-  return uri.with({
-    scheme: 'git',              // Change from 'file' to 'git'
-    path: uri.path,             // Keep the same path
-    query: JSON.stringify(params)  // Add our params as query string
-  });
 }
 
 /**

@@ -28,10 +28,9 @@ import type { ChangeType } from './gitUtils';
  * Interfaces are purely compile-time - they're erased from JavaScript output.
  */
 export interface FileChange {
-  uri: vscode.Uri;          // Location of the file (current version)
-  originalUri: vscode.Uri;  // Location of the original (for renames)
-  status: Status;           // What kind of change (added, modified, etc.)
-  repo: Repository;         // Which repository this file belongs to
+  uri: vscode.Uri; // Location of the file (current version)
+  originalUri: vscode.Uri; // Location of the original (for renames)
+  status: Status; // What kind of change (added, modified, etc.)
 }
 
 /**
@@ -53,7 +52,9 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
    * The generic type <...> specifies what data the event can carry.
    * Here it's the item that changed, or undefined/null/void for "refresh all".
    */
-  private _onDidChangeTreeData = new vscode.EventEmitter<RepoItem | FileItem | undefined | null | void>();
+  private _onDidChangeTreeData = new vscode.EventEmitter<
+    RepoItem | FileItem | undefined | null | void
+  >();
 
   /**
    * readonly: This property can only be set once (in the line above).
@@ -91,6 +92,13 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
   private gitInitPromise: Promise<void>;
 
   /**
+   * Pending debounced refresh. Git operations (branch switch, rebase, bulk
+   * staging) fire onDidChange in bursts; one trailing refresh 150ms after
+   * the last event replaces a full tree rebuild per event.
+   */
+  private refreshTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /**
    * CONSTRUCTOR: Called when 'new ChangesProvider()' is executed.
    * Sets up the initial state and starts async initialization.
    */
@@ -114,13 +122,17 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
        * what shape the extension's exports have. This gives us autocomplete
        * and type-checking when we call gitExtension.exports.getAPI().
        */
-      const gitExtension = vscode.extensions.getExtension<{ getAPI(version: number): GitAPI }>('vscode.git');
+      const gitExtension = vscode.extensions.getExtension<{ getAPI(version: number): GitAPI }>(
+        'vscode.git'
+      );
 
       if (!gitExtension) {
         // Fail gracefully - maybe git isn't installed or enabled
         console.log('Diff Navigator: Git extension not found');
-        vscode.window.showErrorMessage('Diff Navigator: Git extension not found. Please ensure Git is installed.');
-        return;  // Early return pattern - exit immediately if precondition fails
+        vscode.window.showErrorMessage(
+          'Diff Navigator: Git extension not found. Please ensure Git is installed.'
+        );
+        return; // Early return pattern - exit immediately if precondition fails
       }
 
       /**
@@ -128,7 +140,7 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
        * We need to ensure it's active before using its API.
        */
       if (!gitExtension.isActive) {
-        await gitExtension.activate();  // await pauses until activation completes
+        await gitExtension.activate(); // await pauses until activation completes
       }
 
       // Get version 1 of the git API (the only version currently)
@@ -141,10 +153,15 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
        * onDidOpenRepository: Listen for new repos being opened
        * onDidCloseRepository: Listen for repos being closed
        */
-      this.git.repositories.forEach(repo => this.watchRepo(repo));
+      this.git.repositories.forEach((repo) => this.watchRepo(repo));
 
-      const openDisposable = this.git.onDidOpenRepository(repo => this.watchRepo(repo));
-      const closeDisposable = this.git.onDidCloseRepository(repo => {
+      const openDisposable = this.git.onDidOpenRepository((repo) => {
+        this.watchRepo(repo);
+        // Refresh so the repo shows immediately - watchRepo only subscribes
+        // to future state changes, and the initial populate may already be done.
+        this.refresh();
+      });
+      const closeDisposable = this.git.onDidCloseRepository((repo) => {
         const key = repo.rootUri.toString();
         const watcher = this.repoWatchers.get(key);
         if (watcher) {
@@ -154,11 +171,12 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
         this.refresh();
       });
       this.disposables.push(openDisposable, closeDisposable);
-
     } catch (error) {
       // Log errors and notify the user
       console.error('Diff Navigator: Failed to initialize git', error);
-      vscode.window.showErrorMessage('Diff Navigator: Failed to initialize git. Check the console for details.');
+      vscode.window.showErrorMessage(
+        'Diff Navigator: Failed to initialize git. Check the console for details.'
+      );
     }
   }
 
@@ -177,8 +195,9 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
       existing.dispose();
     }
 
-    // Subscribe to the repo's change event, call refresh() when it fires
-    const disposable = repo.state.onDidChange(() => this.refresh());
+    // Subscribe to the repo's change event; refreshes are debounced because
+    // git operations fire onDidChange in bursts
+    const disposable = repo.state.onDidChange(() => this.scheduleRefresh());
 
     // Track this subscription keyed by repo URI for targeted cleanup
     this.repoWatchers.set(key, disposable);
@@ -192,6 +211,28 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
    */
   refresh(): void {
     this._onDidChangeTreeData.fire();
+  }
+
+  /**
+   * Debounced refresh for git state events. The manual refresh command still
+   * calls refresh() directly so the toolbar button feels immediate.
+   */
+  private scheduleRefresh(): void {
+    if (this.refreshTimer !== undefined) {
+      clearTimeout(this.refreshTimer);
+    }
+    this.refreshTimer = setTimeout(() => {
+      this.refreshTimer = undefined;
+      this.refresh();
+    }, 150);
+  }
+
+  /**
+   * Expose the git API to command handlers (extension.ts) so they can use
+   * official API helpers like toGitUri instead of duplicating git internals.
+   */
+  getAPI(): GitAPI | undefined {
+    return this.git;
   }
 
   /**
@@ -255,37 +296,39 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
    * 2. filter(): Keep only repos that have changes
    */
   private getRepoItems(): RepoItem[] {
-    if (!this.git) return [];  // Guard clause (defensive programming)
+    if (!this.git) return []; // Guard clause (defensive programming)
 
     return this.git.repositories
-      .map(repo => {
+      .map((repo) => {
         const changes = this.getChangesForRepo(repo);
         return new RepoItem(repo, changes.length);
       })
-      .filter(item => item.changeCount > 0);  // Hide repos with no changes
+      .filter((item) => item.changeCount > 0); // Hide repos with no changes
   }
 
   /**
-   * Collect all changed files in a repository (both staged and unstaged).
+   * Collect all changed files in a repository: merge conflicts, unstaged,
+   * and staged changes.
    *
-   * WHY deduplicate? A file can appear in both workingTreeChanges AND
-   * indexChanges if it has both staged and unstaged modifications.
-   * We only want to show it once.
+   * WHY deduplicate? A file can appear in several groups at once (e.g. both
+   * staged and unstaged modifications, or conflicted while also listed in
+   * the working tree). Merge changes are passed first so a conflicted file
+   * keeps its conflict status.
    *
    * Ignored files (Status.IGNORED) are filtered out since they shouldn't
    * appear in a "changes" view.
    */
   private getChangesForRepo(repo: Repository): FileChange[] {
     const raw = collectChanges(
+      repo.state.mergeChanges,
       repo.state.workingTreeChanges,
       repo.state.indexChanges
     );
 
-    return raw.map(change => ({
+    return raw.map((change) => ({
       uri: change.uri as vscode.Uri,
       originalUri: change.originalUri as vscode.Uri,
       status: change.status,
-      repo
     }));
   }
 
@@ -298,15 +341,12 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
     const changes = this.getChangesForRepo(repo);
     const repoRoot = repo.rootUri.fsPath;
 
-    return changes.map(change => {
-      /**
-       * Calculate relative path by removing the repo root prefix.
-       *
-       * The regex /^[\/\\]/ matches a leading slash (forward or back).
-       * We remove it so paths don't start with "/" or "\".
-       */
-      const relativePath = change.uri.fsPath.replace(repoRoot, '').replace(/^[/\\]/, '');
-      return new FileItem(relativePath, change, repo);
+    return changes.map((change) => {
+      // path.relative anchors at the repo root; the previous String.replace
+      // was unanchored and case-sensitive, so a casing mismatch (common on
+      // macOS case-insensitive filesystems) rendered the full absolute path.
+      const relativePath = path.relative(repoRoot, change.uri.fsPath);
+      return new FileItem(relativePath, change);
     });
   }
 
@@ -320,9 +360,12 @@ export class ChangesProvider implements vscode.TreeDataProvider<RepoItem | FileI
    * If not disposed, those references prevent garbage collection.
    */
   dispose(): void {
+    if (this.refreshTimer !== undefined) {
+      clearTimeout(this.refreshTimer);
+    }
     this._onDidChangeTreeData.dispose();
-    this.disposables.forEach(d => d.dispose());
-    this.repoWatchers.forEach(d => d.dispose());
+    this.disposables.forEach((d) => d.dispose());
+    this.repoWatchers.forEach((d) => d.dispose());
     this.repoWatchers.clear();
   }
 }
@@ -377,9 +420,12 @@ class RepoItem extends vscode.TreeItem {
      * - iconPath: Icon to show (ThemeIcon uses VS Code's icon set)
      * - contextValue: Used in package.json "when" clauses for menus
      */
-    this.description = changeCount > 0 ? `${changeCount} change${changeCount === 1 ? '' : 's'}` : '';
+    this.description =
+      changeCount > 0 ? `${changeCount} change${changeCount === 1 ? '' : 's'}` : '';
     this.iconPath = new vscode.ThemeIcon('repo');
-    this.contextValue = 'repo';  // Enables context menu items with "viewItem == repo"
+    this.contextValue = 'repo'; // Enables context menu items with "viewItem == repo"
+    // Full path in the tooltip disambiguates same-named repos in multi-root workspaces
+    this.tooltip = repo.rootUri.fsPath;
   }
 }
 
@@ -389,15 +435,14 @@ class RepoItem extends vscode.TreeItem {
 class FileItem extends vscode.TreeItem {
   constructor(
     public readonly relativePath: string,
-    public readonly change: FileChange,
-    public readonly repo: Repository
+    public readonly change: FileChange
   ) {
     // Files are leaf nodes (can't be expanded), so use None
     super(relativePath, vscode.TreeItemCollapsibleState.None);
 
     const changeType = getChangeType(change.status);
     this.iconPath = this.getIcon(changeType);
-    this.contextValue = 'file';  // Enables context menu items with "viewItem == file"
+    this.contextValue = 'file'; // Enables context menu items with "viewItem == file"
 
     /**
      * Setting command makes the item clickable.
@@ -407,8 +452,8 @@ class FileItem extends vscode.TreeItem {
      */
     this.command = {
       command: 'diffNavigator.openDiff',
-      title: 'Open Diff',  // Shown in tooltips/accessibility
-      arguments: [change, repo]  // Passed to the command handler
+      title: 'Open Diff', // Shown in tooltips/accessibility
+      arguments: [change], // Passed to the command handler
     };
 
     /**
@@ -430,12 +475,33 @@ class FileItem extends vscode.TreeItem {
    */
   private getIcon(changeType: ChangeType): vscode.ThemeIcon {
     switch (changeType) {
-      case 'M': return new vscode.ThemeIcon('diff-modified', new vscode.ThemeColor('gitDecoration.modifiedResourceForeground'));
-      case 'A': return new vscode.ThemeIcon('diff-added', new vscode.ThemeColor('gitDecoration.addedResourceForeground'));
-      case 'D': return new vscode.ThemeIcon('diff-removed', new vscode.ThemeColor('gitDecoration.deletedResourceForeground'));
-      case 'R': return new vscode.ThemeIcon('diff-renamed', new vscode.ThemeColor('gitDecoration.renamedResourceForeground'));
-      case 'U': return new vscode.ThemeIcon('diff-ignored', new vscode.ThemeColor('gitDecoration.conflictingResourceForeground'));
-      default: return new vscode.ThemeIcon('file');  // Generic file icon
+      case 'M':
+        return new vscode.ThemeIcon(
+          'diff-modified',
+          new vscode.ThemeColor('gitDecoration.modifiedResourceForeground')
+        );
+      case 'A':
+        return new vscode.ThemeIcon(
+          'diff-added',
+          new vscode.ThemeColor('gitDecoration.addedResourceForeground')
+        );
+      case 'D':
+        return new vscode.ThemeIcon(
+          'diff-removed',
+          new vscode.ThemeColor('gitDecoration.deletedResourceForeground')
+        );
+      case 'R':
+        return new vscode.ThemeIcon(
+          'diff-renamed',
+          new vscode.ThemeColor('gitDecoration.renamedResourceForeground')
+        );
+      case 'U':
+        return new vscode.ThemeIcon(
+          'diff-ignored',
+          new vscode.ThemeColor('gitDecoration.conflictingResourceForeground')
+        );
+      default:
+        return new vscode.ThemeIcon('file'); // Generic file icon
     }
   }
 }

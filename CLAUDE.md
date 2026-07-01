@@ -13,6 +13,9 @@ npm install              # Install dependencies
 npm run compile          # Compile TypeScript to JavaScript (outputs to out/)
 npm run watch            # Compile with watch mode for development
 npm run lint             # Run ESLint on TypeScript source
+npm test                 # Run vitest unit tests (src/*.test.ts)
+npm run test:integration # Run mocha smoke tests inside a real VS Code instance
+npm run format           # Prettier write (format:check to verify only)
 ```
 
 ## Development Workflow
@@ -24,8 +27,7 @@ npm run lint             # Run ESLint on TypeScript source
 ## Packaging
 
 ```bash
-npm install -g @vscode/vsce                    # Install packaging tool (if needed)
-vsce package --allow-missing-repository        # Create .vsix package
+npm run package                                # Create .vsix (vsce is a devDependency)
 code --install-extension diff-navigator-*.vsix # Install locally
 ```
 
@@ -34,11 +36,12 @@ code --install-extension diff-navigator-*.vsix # Install locally
 **Entry Points:**
 - `src/extension.ts` - Activation entry point; registers tree view, commands, and event handlers
 - `src/changesProvider.ts` - TreeDataProvider implementation; manages repository/file tree data
+- `src/gitUtils.ts` - Pure git status logic (enum wire values, change dedup, diff routing); unit tested without vscode mocks
 
 **Data Flow:**
 1. Extension activates → `ChangesProvider` created
 2. `ChangesProvider.initGit()` connects to VSCode's built-in git extension asynchronously
-3. Git API provides repositories and their changed files (working tree + index)
+3. Git API provides repositories and their changed files (merge conflicts + working tree + index)
 4. `getChildren()` builds tree (repos at root, files as children)
 5. `repo.state.onDidChange()` triggers automatic refresh when git state changes
 
@@ -64,17 +67,21 @@ Requires VSCode's built-in `vscode.git` extension (declared in `extensionDepende
 ## Maintenance
 
 **Version Updates (package.json):**
-- `version` - Bump before each release (currently 0.0.1). Use semver: patch for fixes, minor for features, major for breaking changes
+- `version` - Bump before each release (currently 1.0.1). Use semver: patch for fixes, minor for features, major for breaking changes
 - `engines.vscode` - Minimum VSCode version (^1.74.0). Update if using newer VSCode APIs
 - `@types/vscode` in devDependencies - Should match `engines.vscode` version
 - `@types/node` - Update periodically; match the Node version bundled with target VSCode
 - `typescript` - Update as needed for new language features
 
+**Git API type definitions (src/git.d.ts + src/gitUtils.ts):**
+- Both mirror the upstream git extension Status enum; the numeric positions are the wire values the API returns at runtime
+- To update, copy the enum verbatim from https://github.com/microsoft/vscode/blob/main/extensions/git/src/api/git.d.ts and sync `GitStatus` in gitUtils.ts - the pin test in gitUtils.test.ts fails on any drift
+
 **Before Publishing:**
 - Verify `icon` path exists (images/icon.png) or remove the field
-- Add `publisher` field with your VS Code Marketplace publisher ID
-- Add `repository` field if publishing to marketplace
-- Consider adding `license` field
+- `publisher`, `repository`, and `license` are already set in package.json - verify they are current
+- Bump `version` and add a CHANGELOG.md entry
+- Run `npx vsce ls` to confirm no dev files leak into the VSIX
 
 **Adding New Features:**
 - New commands: Add to `contributes.commands`, implement in extension.ts, optionally add to `contributes.menus`
