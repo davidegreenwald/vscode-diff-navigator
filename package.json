@@ -9,7 +9,7 @@
     "type": "git",
     "url": "https://github.com/davidegreenwald/vscode-diff-navigator"
   },
-  "version": "1.0.0",
+  "version": "1.0.1",
   "engines": {
     "vscode": "^1.74.0"
   },
@@ -23,9 +23,6 @@
     "sidebar",
     "changes",
     "multi-root"
-  ],
-  "activationEvents": [
-    "onStartupFinished"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -86,6 +83,20 @@
           "when": "view == diffNavigator.changes && viewItem == file && config.diffNavigator.showRevealButton",
           "group": "inline"
         }
+      ],
+      "commandPalette": [
+        {
+          "command": "diffNavigator.openDiff",
+          "when": "false"
+        },
+        {
+          "command": "diffNavigator.openTerminal",
+          "when": "false"
+        },
+        {
+          "command": "diffNavigator.revealInExplorer",
+          "when": "false"
+        }
       ]
     },
     "configuration": {
@@ -122,8 +133,7 @@
     "@eslint/js": "^9.39.2",
     "@types/node": "^18.0.0",
     "@types/vscode": "^1.74.0",
-    "@typescript-eslint/eslint-plugin": "^8.54.0",
-    "@typescript-eslint/parser": "^8.54.0",
+    "@types/mocha": "^10.0.10",
     "@vscode/test-cli": "^0.0.10",
     "@vscode/test-electron": "^2.4.1",
     "@vscode/vsce": "^3.2.2",
