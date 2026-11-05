@@ -20,7 +20,7 @@
  * We've defined just enough for our extension to work.
  */
 
-import { Uri, Event, Disposable } from 'vscode';
+import { Uri, Event } from 'vscode';
 
 /**
  * The main API object returned by gitExtension.exports.getAPI(1)
@@ -37,6 +37,13 @@ export interface API {
 
   /** Fires when a repository is closed (e.g., user closes a folder) */
   onDidCloseRepository: Event<Repository>;
+
+  /**
+   * Build a git-scheme URI that resolves to a file's content at a specific
+   * ref. Provided by the git extension so consumers do not depend on the
+   * internal query format of git-scheme URIs.
+   */
+  toGitUri(uri: Uri, ref: string): Uri;
 }
 
 /**
@@ -103,31 +110,36 @@ export interface Change {
  * Status.INDEX_MODIFIED with 0 directly. This is more efficient
  * but means you can't iterate over enum values at runtime.
  *
- * These values come from VS Code's git extension source code.
- * The numbers are arbitrary but must match what the git extension uses.
+ * Copied verbatim from the git extension source so the implicit numeric
+ * values stay aligned with what the API returns at runtime:
+ * https://github.com/microsoft/vscode/blob/main/extensions/git/src/api/git.d.ts
+ * (synced 2026-07-01). Do not reorder, remove, or renumber members - the
+ * positions ARE the wire values. GitStatus in gitUtils.ts mirrors this enum
+ * and a unit test pins the expected numbers to catch drift.
  *
  * INDEX_* = staged changes (in the git index/staging area)
- * Others = unstaged changes (working tree)
+ * Others = unstaged changes (working tree) or merge conflict states
  */
 export const enum Status {
-  INDEX_MODIFIED = 0,   // Staged: file was modified
-  INDEX_ADDED = 1,      // Staged: new file added
-  INDEX_DELETED = 2,    // Staged: file was deleted
-  INDEX_RENAMED = 3,    // Staged: file was renamed/moved
-  INDEX_COPIED = 4,     // Staged: file was copied
+  INDEX_MODIFIED,
+  INDEX_ADDED,
+  INDEX_DELETED,
+  INDEX_RENAMED,
+  INDEX_COPIED,
 
-  MODIFIED = 5,         // Unstaged: file was modified
-  DELETED = 6,          // Unstaged: file was deleted
-  UNTRACKED = 7,        // New file not yet tracked by git
-  IGNORED = 8,          // File matches .gitignore pattern
-  INTENT_TO_ADD = 9,    // Tracked with 'git add -N' but content not staged
+  MODIFIED,
+  DELETED,
+  UNTRACKED,
+  IGNORED,
+  INTENT_TO_ADD,
+  INTENT_TO_RENAME,
+  TYPE_CHANGED,
 
-  // Merge conflict states (during merge, rebase, or cherry-pick)
-  ADDED_BY_US = 10,     // We added a file that doesn't exist in theirs
-  ADDED_BY_THEM = 11,   // They added a file that doesn't exist in ours
-  DELETED_BY_US = 12,   // We deleted a file they modified
-  DELETED_BY_THEM = 13, // They deleted a file we modified
-  BOTH_ADDED = 14,      // Both sides added the same file (content conflict)
-  BOTH_DELETED = 15,    // Both sides deleted the file
-  BOTH_MODIFIED = 16    // Both sides modified the same file (content conflict)
+  ADDED_BY_US,
+  ADDED_BY_THEM,
+  DELETED_BY_US,
+  DELETED_BY_THEM,
+  BOTH_ADDED,
+  BOTH_DELETED,
+  BOTH_MODIFIED,
 }
